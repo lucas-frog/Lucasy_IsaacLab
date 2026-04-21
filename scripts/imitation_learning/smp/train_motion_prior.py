@@ -19,12 +19,14 @@ def _find_rsl_rl_repo_root() -> Path:
     raise FileNotFoundError("Could not locate nested rsl_rl repository")
 
 
-_RSL_RL_REPO_ROOT = _find_rsl_rl_repo_root()
-# 将内嵌仓库加入 import 路径，确保可以直接导入 rsl_rl.diffusion。
-if str(_RSL_RL_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_RSL_RL_REPO_ROOT))
-
-from rsl_rl.diffusion import SMPDiffusionTrainer  # noqa: E402
+try:
+    from rsl_rl.diffusion import SMPDiffusionTrainer  # noqa: E402
+except ImportError:
+    _RSL_RL_REPO_ROOT = _find_rsl_rl_repo_root()
+    # 将内嵌仓库加入 import 路径，确保可以直接导入 rsl_rl.diffusion。
+    if str(_RSL_RL_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_RSL_RL_REPO_ROOT))
+    from rsl_rl.diffusion import SMPDiffusionTrainer  # noqa: E402
 
 
 def _build_argparser() -> argparse.ArgumentParser:
