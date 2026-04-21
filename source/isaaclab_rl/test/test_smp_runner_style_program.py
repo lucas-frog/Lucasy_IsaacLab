@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -238,6 +239,26 @@ def test_smp_reward_obs_prefers_terminal_observation_for_done_envs(monkeypatch):
         reward_obs["smp_motion_window"],
         torch.tensor([[1.0, 2.0], [30.0, 40.0]]),
     )
+
+
+def test_restore_smp_window_uses_loaded_prior_feature_dim(monkeypatch):
+    runner_module = _load_runner_module(
+        monkeypatch,
+        feature_masks={
+            "shared_body": torch.tensor([1.0, 0.0, 0.0, 0.0]),
+            "lower_body": torch.tensor([0.0, 1.0, 0.0, 0.0]),
+            "upper_body": torch.tensor([0.0, 0.0, 1.0, 1.0]),
+        },
+    )
+    runner = object.__new__(runner_module.SMPOnPolicyRunner)
+    runner.smp_obs_group = "smp_motion_window"
+    runner.smp_prior_cfg = {"feature_dim": 192, "window_size": 10}
+    runner.smp_prior_feature_dim = 198
+    runner.smp_prior_window_size = 10
+
+    restored = runner._restore_smp_window({"smp_motion_window": torch.zeros(2, 10 * 198)})
+
+    assert restored.shape == (2, 10, 198)
 
 
 def test_gsi_reset_rebuilds_history_backed_observations_for_reset_envs(monkeypatch):
@@ -550,3 +571,42 @@ def test_compute_smp_metrics_passes_uncond_prediction_in_target_vs_uncond_mode(m
     assert runner.smp_reward.recorded is not None
     assert runner.smp_reward.recorded["eps_hat_uncond"] is not None
     assert set(runner.smp_reward.recorded["eps_hat_uncond"].keys()) == {22, 15, 8}
+
+
+def test_resolve_fixed_normalizer_mse_from_positive_group_summary(monkeypatch, tmp_path):
+    runner_module = _load_runner_module(
+        monkeypatch,
+        feature_masks={
+            "shared_body": torch.tensor([1.0, 0.0, 0.0, 0.0]),
+            "lower_body": torch.tensor([0.0, 1.0, 0.0, 0.0]),
+            "upper_body": torch.tensor([0.0, 0.0, 1.0, 1.0]),
+        },
+    )
+    stats_path = tmp_path / "summary.json"
+    stats_path.write_text(
+        json.dumps(
+            {
+                "groups": {
+                    "positive": {
+                        "per_timestep_raw_mse_mean": {
+                            "22": 0.5,
+                            "15": 1.25,
+                            "8": 2.0,
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = object.__new__(runner_module.SMPOnPolicyRunner)
+    runner.smp_prior_cfg = {
+        "timesteps_k": [22, 15, 8],
+        "fixed_normalizer_stats_path": str(stats_path),
+        "fixed_normalizer_mse_by_timestep": {},
+    }
+
+    resolved = runner._resolve_fixed_normalizer_mse_by_timestep()
+
+    assert resolved == {22: 0.5, 15: 1.25, 8: 2.0}

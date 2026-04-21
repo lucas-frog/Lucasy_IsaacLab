@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import importlib.util
+import math
 from pathlib import Path
 import sys
 import types
@@ -59,8 +60,8 @@ def _load_smp_cfg_module():
     raise FileNotFoundError("Could not find source/isaaclab_rl/isaaclab_rl/rsl_rl/smp_cfg.py")
 
 
-def test_log_smp_pretrain_metrics_writes_noise_tags(tmp_path):
-    # 验证预训练日志会写入噪声相关的标量与直方图标签。
+def test_log_smp_pretrain_metrics_defaults_to_scalar_only(tmp_path):
+    # 验证预训练日志默认只写轻量标量，避免每步写入大张量直方图拖慢训练。
     logging_module = _load_diffusion_module("logging")
     writer = SummaryWriter(log_dir=tmp_path)
 
@@ -81,6 +82,29 @@ def test_log_smp_pretrain_metrics_writes_noise_tags(tmp_path):
     assert "SMPPretrain/noise_mse" in accumulator.Tags()["scalars"]
     assert "SMPPretrain/loss_total" in accumulator.Tags()["scalars"]
     assert "SMPPretrain/t22/noise_mse" in accumulator.Tags()["scalars"]
+    assert "SMPPretrain/eps_gap" not in accumulator.Tags()["histograms"]
+
+
+def test_log_smp_pretrain_metrics_can_write_histograms_when_enabled(tmp_path):
+    # 验证需要诊断分布时仍可显式打开直方图日志。
+    logging_module = _load_diffusion_module("logging")
+    writer = SummaryWriter(log_dir=tmp_path)
+
+    logging_module.log_smp_pretrain_metrics(
+        writer,
+        global_step=1,
+        loss=0.5,
+        per_timestep_mse={22: 0.6, 15: 0.4, 8: 0.3},
+        eps=torch.zeros(8, 10, 131),
+        eps_hat=torch.ones(8, 10, 131),
+        log_histograms=True,
+    )
+    writer.flush()
+    writer.close()
+
+    accumulator = EventAccumulator(str(tmp_path))
+    accumulator.Reload()
+
     assert "SMPPretrain/eps_gap" in accumulator.Tags()["histograms"]
 
 
@@ -105,6 +129,28 @@ def test_smp_reward_uses_fixed_timestep_ensemble():
 
     assert out["reward"].shape == (4,)
     assert set(out["per_timestep_mse"].keys()) == {22, 15, 8}
+
+
+def test_smp_reward_absolute_uses_stale_running_mean_before_ema_update():
+    reward_module = _load_diffusion_module("smp_reward")
+    rewarder = reward_module.SMPReward(
+        num_diffusion_steps=50,
+        timesteps_k=[22],
+        reward_scale=1.0,
+        reward_mode="absolute",
+        adaptive_norm_decay=0.5,
+    )
+    eps = {22: torch.zeros(4, 10, 131)}
+    first_eps_hat = {22: torch.ones(4, 10, 131)}
+    second_eps_hat = {22: torch.full((4, 10, 131), 0.5)}
+
+    first_out = rewarder.compute(eps=eps, eps_hat=first_eps_hat)
+    second_out = rewarder.compute(eps=eps, eps_hat=second_eps_hat)
+
+    assert torch.allclose(first_out["reward"], torch.full((4,), torch.exp(torch.tensor(-1.0))))
+    assert torch.allclose(second_out["noise_mse"], torch.full((4,), 0.25))
+    assert torch.allclose(second_out["reward"], torch.full((4,), torch.exp(torch.tensor(-0.25))))
+    assert torch.isclose(rewarder.running_mse[22], torch.tensor(0.625))
 
 
 def test_smp_reward_target_vs_uncond_rewards_target_advantage():
@@ -138,10 +184,102 @@ def test_smp_reward_target_vs_uncond_rewards_target_advantage():
     assert out["noise_mse"].shape == (4,)
 
 
-def test_smp_prior_cfg_defaults_to_absolute_reward_mode():
+def test_smp_reward_fixed_normalizer_uses_offline_reference_scale_without_ema_updates():
+    reward_module = _load_diffusion_module("smp_reward")
+    rewarder = reward_module.SMPReward(
+        num_diffusion_steps=50,
+        timesteps_k=[22, 15, 8],
+        reward_scale=1.0,
+        reward_mode="fixed_normalizer",
+        fixed_normalizer_mse_by_timestep={22: 1.0, 15: 2.0, 8: 4.0},
+    )
+    eps = {
+        22: torch.zeros(4, 10, 131),
+        15: torch.zeros(4, 10, 131),
+        8: torch.zeros(4, 10, 131),
+    }
+    eps_hat = {
+        22: torch.full((4, 10, 131), 1.0),
+        15: torch.full((4, 10, 131), math.sqrt(2.0)),
+        8: torch.full((4, 10, 131), 2.0),
+    }
+
+    out = rewarder.compute(eps=eps, eps_hat=eps_hat)
+
+    assert torch.allclose(out["noise_mse"], torch.ones(4))
+    assert torch.allclose(out["reward"], torch.full((4,), torch.exp(torch.tensor(-1.0))))
+    assert rewarder.running_mse[22] is None
+    assert rewarder.running_mse[15] is None
+    assert rewarder.running_mse[8] is None
+
+
+def test_smp_reward_zscore_preserves_relative_error_variance():
+    reward_module = _load_diffusion_module("smp_reward")
+    rewarder = reward_module.SMPReward(
+        num_diffusion_steps=50,
+        timesteps_k=[22, 15, 8],
+        reward_scale=1.0,
+        reward_mode="zscore",
+    )
+    eps = {
+        22: torch.zeros(4, 10, 131),
+        15: torch.zeros(4, 10, 131),
+        8: torch.zeros(4, 10, 131),
+    }
+    warmup_eps_hat = {
+        22: torch.stack(
+            [
+                torch.full((10, 131), 0.5),
+                torch.full((10, 131), 1.0),
+                torch.full((10, 131), 1.5),
+                torch.full((10, 131), 2.0),
+            ],
+            dim=0,
+        ),
+        15: torch.stack(
+            [
+                torch.full((10, 131), 0.5),
+                torch.full((10, 131), 1.0),
+                torch.full((10, 131), 1.5),
+                torch.full((10, 131), 2.0),
+            ],
+            dim=0,
+        ),
+        8: torch.stack(
+            [
+                torch.full((10, 131), 0.5),
+                torch.full((10, 131), 1.0),
+                torch.full((10, 131), 1.5),
+                torch.full((10, 131), 2.0),
+            ],
+            dim=0,
+        ),
+    }
+    rewarder.compute(eps=eps, eps_hat=warmup_eps_hat)
+
+    out = rewarder.compute(eps=eps, eps_hat=warmup_eps_hat)
+
+    assert out["reward"].shape == (4,)
+    assert out["noise_z"].shape == (4,)
+    assert out["reward"][0] > out["reward"][1] > out["reward"][2] > out["reward"][3]
+    assert out["reward"].std() > 0.05
+    assert torch.all((out["reward"] >= 0.0) & (out["reward"] <= 1.0))
+
+
+def test_smp_prior_cfg_defaults_to_current_reward_mode():
     cfg_module = _load_smp_cfg_module()
 
-    assert cfg_module.SMPPriorCfg.reward_mode == "absolute"
+    assert cfg_module.SMPPriorCfg.reward_mode == "zscore"
+
+
+def test_smp_prior_cfg_exposes_zscore_tuning_defaults():
+    cfg_module = _load_smp_cfg_module()
+
+    assert cfg_module.SMPPriorCfg.adaptive_norm_decay == 0.999
+    assert 0.0 < cfg_module.SMPPriorCfg.zscore_reward_center < 1.0
+    assert cfg_module.SMPPriorCfg.zscore_std_floor > 0.0
+    assert cfg_module.SMPPriorCfg.fixed_normalizer_stats_path is None
+    assert cfg_module.SMPPriorCfg.fixed_normalizer_mse_by_timestep.default_factory is dict
 
 
 def test_log_smp_noise_metrics_writes_timestep_histogram_tags(tmp_path):

@@ -73,3 +73,24 @@ def test_g1_upper_lower_mask_template_is_disjoint_and_exhaustive():
 
     assert torch.all(stacked.sum(dim=0) == 1)
     assert int(masks["shared_body"].sum().item()) == 24
+
+
+def test_g1_upper_lower_mask_template_covers_extended_world_velocity_blocks():
+    composition = _load_module(("rsl_rl", "rsl_rl", "diffusion", "composition.py"), "isaaclab_smp_composition_unit")
+    g1_config = _load_g1_config_module()
+
+    masks = composition.build_g1_body_part_feature_masks(
+        mask_name=g1_config.g1_smp_mask_template_name,
+        joint_name_order=g1_config.g1_smp_joint_names,
+        ee_name_order=g1_config.g1_ee_names,
+        key_body_name_order=g1_config.g1_key_body_names,
+        feature_block_offsets=g1_config.g1_smp_feature_block_offsets_for_schema("extended_198"),
+    )
+    stacked = torch.stack(
+        [masks["shared_body"], masks["lower_body"], masks["upper_body"]],
+        dim=0,
+    )
+
+    assert masks["shared_body"].shape == (198,)
+    assert torch.all(stacked.sum(dim=0) == 1)
+    assert torch.all(masks["shared_body"][192:198] == 1)

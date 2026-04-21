@@ -93,6 +93,22 @@ def test_smp_dataset_reads_multi_style_manifest_and_returns_metadata(tmp_path):
     assert last["source_name"] == "walk_b"
 
 
+def test_smp_dataset_reads_feature_schema_and_extended_feature_dim(tmp_path):
+    smp_dataset = _load_smp_dataset_module()
+    path = tmp_path / "toy_motion_198.npz"
+    np.savez(
+        path,
+        fps=np.array([30]),
+        frames=np.random.randn(12, 198).astype(np.float32),
+        feature_schema=np.asarray(["extended_198"], dtype=np.str_),
+    )
+
+    dataset = smp_dataset.SMPMotionWindowDataset(path, window_size=10, stride=1)
+
+    assert dataset.feature_schema == "extended_198"
+    assert dataset[0]["motion"].shape == (10, 198)
+
+
 def test_export_g1_motion_dataset_writes_frames_and_metadata(tmp_path):
     # 验证导出脚本会写出 frames 以及训练所需的关键元数据字段。
     exporter = _load_export_g1_motion_dataset_module()
