@@ -43,13 +43,27 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--learning-rate", type=float, default=3.0e-4, help="优化器学习率。")
     parser.add_argument("--ema-decay", type=float, default=0.999, help="EMA 衰减系数。")
     parser.add_argument("--num-styles", type=int, default=None, help="条件模型可用的风格总数；默认从数据集推断。")
-    parser.add_argument("--style-drop-prob", type=float, default=0.0, help="classifier-free guidance 的风格 dropout 概率。")
+    parser.add_argument(
+        "--style-drop-prob",
+        type=float,
+        default=0.0,
+        help=(
+            "classifier-free guidance 的风格 dropout 概率；非零值会训练 NULL_STYLE_ID/uncond 分支，"
+            "style 数据集上使用 CFG 时建议显式设置。"
+        ),
+    )
     parser.add_argument(
         "--timesteps-k",
         type=int,
         nargs="+",
         default=[22, 15, 8],
         help="SMP reward / 预训练诊断使用的固定扩散时间步集合；预训练采样始终在 [0, N) 全范围均匀采样。",
+    )
+    parser.add_argument(
+        "--log-histograms",
+        action="store_true",
+        default=False,
+        help="显式开启 TensorBoard 直方图日志；默认只记录标量以减小日志量并避免拖慢训练。",
     )
     parser.add_argument("--device", default=None, help="显式指定训练设备，例如 cpu 或 cuda:0。")
     return parser
@@ -74,6 +88,7 @@ def main():
         ema_decay=args.ema_decay,
         num_styles=args.num_styles,
         style_drop_prob=args.style_drop_prob,
+        log_histograms=args.log_histograms,
         device=args.device,
     )
     # 启动离线训练并输出关键结果，方便快速确认训练状态。
