@@ -28,6 +28,7 @@ import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from isaaclab_tasks.manager_based.locomotion.velocity.config.g1.agents.config import (
     g1_ee_names,
     g1_key_body_names,
+    g1_smp_feature_schema,
     g1_smp_feature_dim,
     g1_smp_joint_axes,
     g1_smp_joint_names,
@@ -249,6 +250,7 @@ class ObservationsCfg:
                 "joint_axes": g1_smp_joint_axes,
                 "expected_joint_dim": g1_smp_num_joints,
                 "expected_feature_dim": g1_smp_feature_dim,
+                "feature_schema": g1_smp_feature_schema,
             },
         )
 

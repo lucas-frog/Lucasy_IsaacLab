@@ -7,9 +7,19 @@ from __future__ import annotations
 
 import torch
 
+LEGACY_SMP_FEATURE_SCHEMA = "legacy_192"
+EXTENDED_SMP_FEATURE_SCHEMA = "extended_198"
+
 
 def _normalize(vec: torch.Tensor, eps: float = 1.0e-8) -> torch.Tensor:
     return vec / vec.norm(dim=-1, keepdim=True).clamp_min(eps)
+
+
+def _normalize_feature_schema(feature_schema: str) -> str:
+    normalized = str(feature_schema)
+    if normalized not in {LEGACY_SMP_FEATURE_SCHEMA, EXTENDED_SMP_FEATURE_SCHEMA}:
+        raise ValueError(f"Unsupported SMP feature schema: {feature_schema}")
+    return normalized
 
 
 def _matrix_from_quat(quat_wxyz: torch.Tensor) -> torch.Tensor:
@@ -96,6 +106,30 @@ def world_to_local_frame(rotation_world_from_local: torch.Tensor, vec_w: torch.T
     while rotation_world_from_local.ndim < vec_w.ndim + 1:
         rotation_world_from_local = rotation_world_from_local.unsqueeze(-3)
     return torch.matmul(vec_w.unsqueeze(-2), rotation_world_from_local).squeeze(-2)
+
+
+def base_velocity_command_to_world_velocities(
+    root_quat_wxyz: torch.Tensor,
+    command_b: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """将 base-frame [vx, vy, yaw_rate] 速度命令转换为 world-frame 根速度 6D。"""
+    if root_quat_wxyz.shape[-1] != 4:
+        raise ValueError(f"Expected root_quat_wxyz last dim 4, got {root_quat_wxyz.shape[-1]}")
+    if command_b.shape[-1] != 3:
+        raise ValueError(f"Expected command_b last dim 3, got {command_b.shape[-1]}")
+    if root_quat_wxyz.shape[:-1] != command_b.shape[:-1]:
+        raise ValueError("SMP command velocity and root quaternion inputs have inconsistent leading dimensions")
+
+    heading_rotation = build_heading_frame_rotation(root_quat_wxyz)
+    forward_w = heading_rotation[..., :, 0]
+    up_w = torch.zeros_like(forward_w)
+    up_w[..., 2] = 1.0
+    left_w = torch.cross(up_w, forward_w, dim=-1)
+
+    lin_vel_w = command_b[..., 0:1] * forward_w + command_b[..., 1:2] * left_w
+    ang_vel_w = torch.zeros_like(lin_vel_w)
+    ang_vel_w[..., 2] = command_b[..., 2]
+    return lin_vel_w, ang_vel_w
 
 
 def joint_angle_offsets_to_rot6d(joint_angle_offsets: torch.Tensor, joint_axes: torch.Tensor) -> torch.Tensor:
@@ -189,6 +223,8 @@ def build_smp_feature_components(
         "base_ang_vel_b": world_to_local_frame(heading_rotation, root_ang_vel_w),
         "joint_rot6d_rel": joint_positions_to_rot6d(joint_pos, default_joint_pos, joint_axes),
         "ee_pos_b": world_to_local_frame(heading_rotation, ee_pos_rel_w),
+        "base_lin_vel_w": root_lin_vel_w,
+        "base_ang_vel_w": root_ang_vel_w,
     }
 
 
@@ -197,9 +233,13 @@ def pack_smp_frame_features(
     base_ang_vel_b: torch.Tensor,
     joint_rot6d_rel: torch.Tensor,
     ee_pos_b: torch.Tensor,
+    base_lin_vel_w: torch.Tensor | None = None,
+    base_ang_vel_w: torch.Tensor | None = None,
+    feature_schema: str = LEGACY_SMP_FEATURE_SCHEMA,
     expected_feature_dim: int | None = None,
 ) -> torch.Tensor:
     """将单帧 SMP 特征按照统一顺序拼接成向量。"""
+    feature_schema = _normalize_feature_schema(feature_schema)
     lead_shape = base_lin_vel_b.shape[:-1]
     if base_lin_vel_b.shape[-1] != 3:
         raise ValueError(f"Expected base_lin_vel_b last dim 3, got {base_lin_vel_b.shape[-1]}")
@@ -216,7 +256,16 @@ def pack_smp_frame_features(
 
     joint_rot6d_rel = joint_rot6d_rel.reshape(*lead_shape, -1)
     ee_pos_b = ee_pos_b.reshape(*lead_shape, -1)
-    features = torch.cat([base_lin_vel_b, base_ang_vel_b, joint_rot6d_rel, ee_pos_b], dim=-1)
+    feature_parts = [base_lin_vel_b, base_ang_vel_b, joint_rot6d_rel, ee_pos_b]
+    if feature_schema == EXTENDED_SMP_FEATURE_SCHEMA:
+        if base_lin_vel_w is None or base_ang_vel_w is None:
+            raise ValueError("extended_198 schema requires base_lin_vel_w and base_ang_vel_w")
+        if base_lin_vel_w.shape[:-1] != lead_shape or base_ang_vel_w.shape[:-1] != lead_shape:
+            raise ValueError("SMP world velocity feature inputs have inconsistent leading dimensions")
+        if base_lin_vel_w.shape[-1] != 3 or base_ang_vel_w.shape[-1] != 3:
+            raise ValueError("Expected SMP world linear/angular velocities to have last dim 3")
+        feature_parts.extend([base_lin_vel_w, base_ang_vel_w])
+    features = torch.cat(feature_parts, dim=-1)
     if expected_feature_dim is not None and features.shape[-1] != expected_feature_dim:
         raise ValueError(f"Expected SMP feature dim {expected_feature_dim}, got {features.shape[-1]}")
     return features

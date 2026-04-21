@@ -12,7 +12,11 @@ import torch
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
 
-from .smp_features import build_smp_feature_components, pack_smp_frame_features
+from .smp_features import (
+    base_velocity_command_to_world_velocities,
+    build_smp_feature_components,
+    pack_smp_frame_features,
+)
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -26,6 +30,9 @@ def smp_frame_features(
     joint_axes: torch.Tensor | list[list[float]] | list[tuple[float, float, float]] | None = None,
     expected_joint_dim: int | None = None,
     expected_feature_dim: int | None = None,
+    feature_schema: str = "legacy_192",
+    world_velocity_source: str = "asset",
+    command_name: str = "base_velocity",
 ) -> torch.Tensor:
     """在 pelvis-heading 局部坐标系下提取一帧 SMP 特征。"""
     if asset_cfg.name != ee_asset_cfg.name or asset_cfg.name != key_body_cfg.name:
@@ -51,10 +58,23 @@ def smp_frame_features(
         ee_pos_w=asset.data.body_pos_w[:, ee_asset_cfg.body_ids],
     )
 
+    world_velocity_source = str(world_velocity_source)
+    if world_velocity_source == "asset":
+        base_lin_vel_w = feature_components["base_lin_vel_w"]
+        base_ang_vel_w = feature_components["base_ang_vel_w"]
+    elif world_velocity_source == "command":
+        command_b = env.command_manager.get_command(command_name)
+        base_lin_vel_w, base_ang_vel_w = base_velocity_command_to_world_velocities(asset.data.root_quat_w, command_b)
+    else:
+        raise ValueError(f"Unsupported SMP world_velocity_source: {world_velocity_source}")
+
     return pack_smp_frame_features(
         base_lin_vel_b=feature_components["base_lin_vel_b"],
         base_ang_vel_b=feature_components["base_ang_vel_b"],
         joint_rot6d_rel=feature_components["joint_rot6d_rel"],
         ee_pos_b=feature_components["ee_pos_b"],
+        base_lin_vel_w=base_lin_vel_w,
+        base_ang_vel_w=base_ang_vel_w,
+        feature_schema=feature_schema,
         expected_feature_dim=expected_feature_dim,
     )

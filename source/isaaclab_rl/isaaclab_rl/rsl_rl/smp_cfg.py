@@ -42,11 +42,16 @@ class SMPPriorCfg:
     checkpoint_path: str = MISSING
     window_size: int = 10
     feature_dim: int = MISSING
+    feature_schema: str = "legacy_192"
     num_diffusion_steps: int = 50
     timesteps_k: list[int] = MISSING
-    reward_mode: str = "target_vs_uncond"
-    reward_scale: float = 1.0
+    reward_mode: str = "absolute"
+    reward_scale: float = 2.0
     adaptive_norm_decay: float = 0.99
+    zscore_reward_center: float = 0.7
+    zscore_std_floor: float = 1.0e-6
+    fixed_normalizer_stats_path: str = "/home/lucas/isaac-sim/IsaacLab/logs/smp_prior/g1/eval/summary.json"
+    fixed_normalizer_mse_by_timestep: dict[int, float] = field(default_factory=dict)
     log_histograms_every: int = 20
     style_cfg: SMPStyleCfg = field(default_factory=SMPStyleCfg)
 

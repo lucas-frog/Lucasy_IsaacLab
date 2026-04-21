@@ -22,6 +22,7 @@ from .config import (
     g1_key_body_names,
     g1_root_name,
     g1_smp_feature_block_offsets,
+    g1_smp_feature_schema,
     g1_smp_feature_dim,
     g1_smp_joint_axes,
     g1_smp_joint_names,
@@ -105,6 +106,7 @@ class G1SMPRunnerCfg(SMPRunnerCfg):
     smp_prior = SMPPriorCfg(
         checkpoint_path="logs/smp_prior/g1/pretrain_407/model_latest.pt",
         feature_dim=g1_smp_feature_dim,
+        feature_schema=g1_smp_feature_schema,
         window_size=g1_smp_window_size,
         num_diffusion_steps=g1_smp_num_diffusion_steps,
         timesteps_k=g1_smp_timesteps_k,

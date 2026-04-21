@@ -109,16 +109,37 @@ def _joint_axis_for_name(joint_name: str) -> tuple[float, float, float]:
 
 g1_smp_joint_axes = [_joint_axis_for_name(joint_name) for joint_name in g1_smp_joint_names]
 g1_smp_num_joints = len(g1_smp_joint_names)
-g1_smp_feature_dim = 3 + 3 + 6 * g1_smp_num_joints + 3 * len(g1_ee_names)
+g1_smp_feature_schema = "legacy_192"
+g1_smp_legacy_feature_dim = 3 + 3 + 6 * g1_smp_num_joints + 3 * len(g1_ee_names)
 g1_smp_num_diffusion_steps = 50
 g1_smp_timesteps_k = [22, 15, 8]
 
 
-g1_smp_feature_block_offsets = {
-    "base_lin_vel_b": (0, 3),
-    "base_ang_vel_b": (3, 6),
-    "joint_rot6d_rel": (6, 6 + 6 * g1_smp_num_joints),
-    "ee_pos_b": (6 + 6 * g1_smp_num_joints, g1_smp_feature_dim),
-}
+def g1_smp_feature_dim_for_schema(feature_schema: str) -> int:
+    if feature_schema == "legacy_192":
+        return g1_smp_legacy_feature_dim
+    if feature_schema == "extended_198":
+        return g1_smp_legacy_feature_dim + 6
+    raise ValueError(f"Unsupported G1 SMP feature schema: {feature_schema}")
+
+
+def g1_smp_feature_block_offsets_for_schema(feature_schema: str) -> dict[str, tuple[int, int]]:
+    feature_dim = g1_smp_legacy_feature_dim
+    offsets = {
+        "base_lin_vel_b": (0, 3),
+        "base_ang_vel_b": (3, 6),
+        "joint_rot6d_rel": (6, 6 + 6 * g1_smp_num_joints),
+        "ee_pos_b": (6 + 6 * g1_smp_num_joints, feature_dim),
+    }
+    if feature_schema == "extended_198":
+        offsets["base_lin_vel_w"] = (feature_dim, feature_dim + 3)
+        offsets["base_ang_vel_w"] = (feature_dim + 3, feature_dim + 6)
+    elif feature_schema != "legacy_192":
+        raise ValueError(f"Unsupported G1 SMP feature schema: {feature_schema}")
+    return offsets
+
+
+g1_smp_feature_dim = g1_smp_feature_dim_for_schema(g1_smp_feature_schema)
+g1_smp_feature_block_offsets = g1_smp_feature_block_offsets_for_schema(g1_smp_feature_schema)
 
 g1_smp_mask_template_name = "g1_upper_lower"
